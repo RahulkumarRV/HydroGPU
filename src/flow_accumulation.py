@@ -1,119 +1,234 @@
 import cupy as cp
+from make_tif import GeoTIFFHandler
+from flow_direction import load_tif_image
+import numpy as np
+import time
 
-def scatter_add(arr, indices, values):
-    """ 
-    Performs scatter-add operation for CuPy.
-    Equivalent to NumPy's `np.add.at()` but using atomic operations.
+# Define direction offsets mapping 1-8 to (row_offset, col_offset)
+# Note: In rasterio/numpy/cupy, rows are typically the first dimension (y),
+# and columns the second (x).
+# The mapping from the original TF code seems to follow a grid like this:
+# 3  2  1
+# 4     8
+# 5  6  7
+# (di, dj)
+# (row, col) offset where positive row is down, positive col is right.
+# So:
+# 1: Top-right -> row -1, col +1
+# 2: Top-middle -> row -1, col 0
+# 3: Top-left -> row -1, col -1
+# 4: Left -> row 0, col -1
+# 5: Bottom-left -> row +1, col -1
+# 6: Bottom-middle -> row +1, col 0
+# 7: Bottom-right -> row +1, col +1
+# 8: Right -> row 0, col +1
+# This matches the original shift_offsets dictionary.
+
+
+shift_offsets = {
+    1: (-1, 1),   # Top-right
+    2: (-1, 0),   # Top-middle
+    3: (-1, -1),  # Top-left
+    4: (0, -1),   # Left
+    5: (1, -1),   # Bottom-left
+    6: (1, 0),    # Bottom-middle
+    7: (1, 1),    # Bottom-right
+    8: (0, 1)     # Right
+}
+
+def transfer_values_cupy_bincount(v, d):
     """
-    if len(indices) > 0:  # Ensure there are valid updates
-        arr[indices[:, 0], indices[:, 1]] += values
+    Transfers values from matrix `v` to neighboring cells based on direction matrix `d` using CuPy and bincount.
 
-
-def transfer_values_gpu_cupy(v, d):
-    """
-    Transfers values from matrix `v` to neighboring cells based on direction matrix `d` using CuPy.
-    
-    v: CuPy array of shape (H, W) containing the values.
+    v: CuPy array of shape (H, W) containing the values to transfer in this step.
     d: CuPy array of shape (H, W) containing direction indices (1-8).
-    
+
     Returns:
-        CuPy array of shape (H, W) after value transfer.
+        CuPy array of shape (H, W) representing the values transferred IN THIS STEP.
     """
     H, W = v.shape
+    # Use float32 for accumulating values
 
-    # Define shift directions corresponding to 1-8 direction mapping
-    shift_offsets = {
-        1: (-1, 1),   # Top-right
-        2: (-1, 0),   # Top-middle
-        3: (-1, -1),  # Top-left
-        4: (0, -1),   # Left
-        5: (1, -1),   # Bottom-left
-        6: (1, 0),    # Bottom-middle
-        7: (1, 1),    # Bottom-right
-        8: (0, 1)     # Right
-    }
+    # *** GUARANTEE result is assigned at the start ***
+    result = cp.zeros((H, W), dtype=cp.float32)
 
-    result = cp.zeros_like(v)  # Initialize result array
+    # Find cells that have a value > 0 to transfer
+    has_value_mask = (v > 0)
 
-    # Get all valid indices where v > 0
-    indices = cp.argwhere(v > 0)  
+    src_rows_all, src_cols_all = cp.nonzero(has_value_mask)
+    # Only proceed if there are any values > 0 to potentially transfer
+    if src_rows_all.size == 0:
+        return result # No values to transfer, return the initial zero result
 
-    for direction, (di, dj) in shift_offsets.items():
-        mask = d[indices[:, 0], indices[:, 1]] == direction  # Get mask for the direction
-        selected_indices = indices[mask]  # Select only relevant indices
+    values_to_transfer_all = v[src_rows_all, src_cols_all]
+    directions_all = d[src_rows_all, src_cols_all]
 
-        if len(selected_indices) > 0:  # Avoid empty updates
-            # Compute new positions
-            new_pos = selected_indices + cp.array([di, dj])
+    # Filter for valid directions (1-8) in the sources
+    valid_direction_mask = (directions_all >= 1) & (directions_all <= 8)
+    src_rows_valid = src_rows_all[valid_direction_mask]
+    src_cols_valid = src_cols_all[valid_direction_mask]
+    values_valid = values_to_transfer_all[valid_direction_mask]
+    directions_valid = directions_all[valid_direction_mask]
 
-            # Ensure new positions are within bounds
-            valid_mask = (new_pos[:, 0] >= 0) & (new_pos[:, 0] < H) & (new_pos[:, 1] >= 0) & (new_pos[:, 1] < W)
-            new_pos = new_pos[valid_mask]
-            selected_indices = selected_indices[valid_mask]
+    # Check if there are any valid transfers towards valid directions
+    if values_valid.size > 0:
+        all_flat_dest_indices = []
+        all_transfer_values = []
 
-            # Perform scatter-add operation
-            scatter_add(result, new_pos, v[selected_indices[:, 0], selected_indices[:, 1]])
+        for direction, (di, dj) in shift_offsets.items():
+             direction_mask_this_dir = (directions_valid == direction)
+             if not cp.any(direction_mask_this_dir):
+                 continue
+
+             src_rows_this_dir = src_rows_valid[direction_mask_this_dir]
+             src_cols_this_dir = src_cols_valid[direction_mask_this_dir]
+             values_this_dir = values_valid[direction_mask_this_dir]
+
+             dest_rows_this_dir = src_rows_this_dir + di
+             dest_cols_this_dir = src_cols_this_dir + dj
+
+             # Check boundary conditions
+             valid_mask_this_dir = (dest_rows_this_dir >= 0) & (dest_rows_this_dir < H) & \
+                                    (dest_cols_this_dir >= 0) & (dest_cols_this_dir < W)
+
+             valid_dest_rows = dest_rows_this_dir[valid_mask_this_dir]
+             valid_dest_cols = dest_cols_this_dir[valid_mask_this_dir]
+             valid_values_this_dir = values_this_dir[valid_mask_this_dir] # Renamed to avoid conflict if needed
+
+             if valid_values_this_dir.size > 0:
+                # Flatten valid destination indices
+                flat_valid_dest_indices = valid_dest_rows * W + valid_dest_cols
+
+                # Collect flattened indices and values from all directions
+                all_flat_dest_indices.append(flat_valid_dest_indices)
+                all_transfer_values.append(valid_values_this_dir) # Append renamed variable
+
+
+        # *** Perform bincount only if any transfers were collected ***
+        if all_flat_dest_indices:
+             all_flat_dest_indices = cp.concatenate(all_flat_dest_indices)
+             all_transfer_values = cp.concatenate(all_transfer_values)
+
+             bincount_result_flat = cp.bincount(
+                 all_flat_dest_indices,
+                 weights=all_transfer_values,
+                 minlength=H * W
+             )
+
+             # *** Reassign result with the calculated transfers ***
+             result = bincount_result_flat.reshape(H, W)
+        # Note: If all_flat_dest_indices is empty, result remains the zeros matrix initialized at the start.
+
+    # If values_valid.size was initially 0, result also remains the zeros matrix.
+    # The initial check 'if src_rows_all.size == 0:' also handles the case
+    # where there are no values > 0 to begin with.
+
+    return result # result is now guaranteed to be assigned
+
+
+def transfer_values_optimized(v, d):
+    """
+    Efficient in-place value transfer using CuPy.
+    
+    v: CuPy array of shape (H, W)
+    d: CuPy array of shape (H, W)
+    
+    Returns:
+        CuPy array (H, W) of transferred values.
+    """
+    H, W = v.shape
+    result = cp.zeros_like(v, dtype=cp.float32)
+
+    for dir_val, (dy, dx) in shift_offsets.items():
+        # Find cells with value > 0 and direction == dir_val
+        mask = (v > 0) & (d == dir_val)
+
+        if not cp.any(mask):
+            continue
+
+        # Get source indices
+        src_rows, src_cols = cp.nonzero(mask)
+        values = v[src_rows, src_cols]
+
+        # Compute destination indices
+        dst_rows = src_rows + dy
+        dst_cols = src_cols + dx
+
+        # Filter out of bounds
+        valid = (dst_rows >= 0) & (dst_rows < H) & (dst_cols >= 0) & (dst_cols < W)
+        dst_rows = dst_rows[valid]
+        dst_cols = dst_cols[valid]
+        values = values[valid]
+
+        # Flattened destination index for bincount
+        dst_flat = dst_rows * W + dst_cols
+        acc = cp.bincount(dst_flat, weights=values, minlength=H * W)
+
+        # Reshape and accumulate in result
+        result += acc.reshape((H, W))
 
     return result
 
+
 def iterative_transfer_cupy(v, d):
     """
-    Iteratively applies transfer_values_gpu_cupy until v becomes all zeros,
+    Iteratively applies transfer_values_cupy until v becomes all zeros,
     summing up all intermediate matrices to get the final cumulative result.
-    
-    v: Initial CuPy matrix (H, W)
-    d: Direction CuPy matrix (H, W)
-    
-    Returns:
-        Summed CuPy matrix after all iterations.
-    """
-    sum_v = cp.zeros_like(v)  # Initialize sum matrix
-    i = 0
-    while cp.sum(v) > 0:  # Continue until all values are transferred
-        v = transfer_values_gpu_cupy(v, d)
-        print(cp.sum(v))
-        sum_v += v  # Accumulate results
-        i += 1
 
+    v: Initial CuPy array (H, W) of values to transfer.
+    d: Direction CuPy array (H, W).
+
+    Returns:
+        Summed CuPy array after all iterations.
+    """
+    # Ensure v is float for summation
+    v = v.astype(cp.float32)
+    sum_v = cp.zeros_like(v, dtype=cp.float32)  # Initialize sum matrix
+
+    iteration = 0
+    # Loop while there are still values > 0 in v to transfer
+    while cp.any(v > 0):
+        iteration += 1
+        # Optional: print iteration progress
+        # Use cp.asnumpy(cp.sum(v)) to get the sum from GPU memory for printing
+        # print(f"Iteration {iteration}: Remaining values to transfer = {cp.asnumpy(cp.sum(v))}")
+
+        # Compute the values transferred in this step
+        new_v = transfer_values_optimized(v, d)
+
+        # Accumulate the results of this step into the total sum
+        sum_v = sum_v + new_v
+
+        # The values for the next iteration are the values that were just transferred
+        v = new_v
+
+    print("Iterative transfer finished.")
     return sum_v
 
-def find_max_coordinate(matrix):
-    """Returns the coordinates of the maximum value in a CuPy matrix."""
-    max_idx = cp.argmax(matrix)  # Get the flattened index of the max value
-    max_coord = cp.unravel_index(max_idx, matrix.shape)  # Convert to 2D coordinates
-    return max_coord
 
-def save_matrix_with_coordinates(matrix, filename):
-    """
-    Saves the matrix values along with their x, y coordinates to a file.
-    
-    Parameters:
-    matrix (cupy.ndarray): The matrix to save.
-    filename (str): The file name to save the data.
-    """
-    y, x = cp.where(matrix != 0)  # Get nonzero coordinates
-    values = matrix[y, x]
-    
-    data = cp.stack((x, y, values), axis=1)  # Stack x, y, and values
-    
-    cp.savetxt(filename, data.get(), fmt='%d', delimiter=',', header='x,y,value', comments='')
 
-# Example Usage with TIFF Data
-import numpy as np
-from flow_direction import load_tif_image
-from make_tif import GeoTIFFHandler
+# --- Main Execution ---
 
-handler = GeoTIFFHandler('../tifs/dems/lower_ganga_fd_.tif')
+FLOW_DIR_TIF = '../tifs/lower_ganga_basin/dem/lower_ganga_fd.tif'
+FLOW_ACC_TIF = '../tifs/lower_ganga_basin/dem/full_itr_floacc.tif'
+DEM = '../tifs/lower_ganga_basin/dem/lower_ganga_dem.tif'
+OUTPUT_STREAM_ORDER_TIF = '../tifs/lower_ganga_basin/flow_acc/lgb_facc.tif'
 
-# Load data as NumPy and convert to CuPy
-d = cp.asarray(load_tif_image('../tifs/dems/lower_ganga_fd_.tif'))
+handler = GeoTIFFHandler(FLOW_DIR_TIF)
+
+# # Load data as NumPy and convert to CuPy
+d = cp.asarray(load_tif_image(FLOW_DIR_TIF))
 v = cp.where(d != 0, cp.ones_like(d), cp.zeros_like(d))
 
 # Compute iterative transfer
+start_time = time.time()
 transferred_v= iterative_transfer_cupy(v, d)
-
+print(f"flow accumulation time : {time.time() - start_time}")
 # save_matrix_with_coordinates(transferred_v, 'dist.txt')
 
-
+transferred_v = cp.where(d != 0, transferred_v, 0)
 # Convert back to NumPy for saving
-handler.save_tiff(cp.asnumpy(transferred_v).astype(np.float32), '../tifs/local/debug_lgb_facc.tif')
+handler.save_tiff(cp.asnumpy(transferred_v).astype(np.float32),  OUTPUT_STREAM_ORDER_TIF)
+
+
+print("DEM Preprocessing (Flow Accumulation) Completed with CuPy!")
