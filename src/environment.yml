@@ -1,0 +1,21 @@
+# Conda environment configuration for the HydroGPU Project
+# To create the environment, run: conda env create -f environment.yml
+# Then, activate the environment with: conda activate my_rapids_env
+
+name: my_rapids_env
+
+channels:
+  - rapidsai
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - cudatoolkit=11.8
+  - rasterio
+  - matplotlib
+  - numpy
+  - pandas
+  - geopandas
+  - gdal
+  - earthengine-api

@@ -9,19 +9,16 @@ import time
 import os
 import re
 import gc
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
 import rasterio
 import numpy as np
 from rasterio.merge import merge
-# from gee_processing import GEEDataDownloader
+from gee_processing import GEEDataDownloader
 from flow_direction import load_tif_image
-# from plot import create_plot
+from plot import create_plot
 from make_tif import GeoTIFFHandler
 import cupy as cp
-from runoff_cp import compute_M, sum_tif_images, calculate_runoff, calculate_runoff_cupy
+from runoff_cp import compute_M, sum_tif_images, calculate_runoff, calculate_runoff_cupy, generate_srs
 from lookup import transfer_flow
-
 
 ########################### Imports - End ########################################
 
@@ -62,121 +59,112 @@ def log_to_file(message, log_file="logfile.log"):
 
 ########################### Download datasets from GEE - Start ###################
 
-# geeDataDownloader = GEEDataDownloader(project_id)
-# status = geeDataDownloader.execute_gee_tasks(dataset_id, asset_id, start_date, end_date, drive_folder, destination_folder)
+geeDataDownloader = GEEDataDownloader(project_id)
+status = geeDataDownloader.execute_gee_tasks(dataset_id, asset_id, start_date, end_date, drive_folder, destination_folder)
 
-# if status["status"] == "failure":
-#     print(f"Error while running GEE tasks : {status["message"]}")
-#     exit()
+if status["status"] == "failure":
+    print(f"Error while running GEE tasks : {status["message"]}")
+    exit()
 
 # dataset is downloaded into the destination folder.
 
+SOIL_MOISTURE_TIF = '../tifs/lower_ganga_basin/soil_moisture.tif'
+LULC_TIF = '../tifs/lower_ganga_basin/lulc.tif'
+SLOPE_TIF = '../tifs/lower_ganga_basin/slope.tif'
 ########################### Download datasets from GEE - End ###################
+
 
 full_execution_start_time = time.time()
 
-handler = GeoTIFFHandler('../tifs/masalia/gee_outputs/sr1_masalia_23-07-07_ak.tif')
+sr1, sr2, sr3 = generate_srs(SOIL_MOISTURE_TIF, LULC_TIF, SLOPE_TIF)
 
-single_file_loading_time_start = time.time()
-sr1 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr1_masalia_23-07-07_ak.tif'), dtype=cp.float32)
-single_file_loading_time_end = time.time()
-log_to_file(f"single file loading time : {single_file_loading_time_end - single_file_loading_time_start}")
-sr2 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr2_masalia_23-07-07_ak.tif'), dtype=cp.float32)
-sr3 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr3_masalia_23-07-07_ak.tif'), dtype=cp.float32)
+handler = GeoTIFFHandler(SLOPE_TIF)
 
 
 
-import os
-import time
-import cupy as cp
-import gc
-from flow_direction import load_tif_image
-from make_tif import GeoTIFFHandler
-
-
-def process_images(folder_path, output_folder="runoff_output"):
-    """
-    Process rainfall images, compute runoff using soil moisture, and save results.
-    """
-    files = sorted(os.listdir(folder_path))  # Sort files for correct order
-    os.makedirs(output_folder, exist_ok=True)
+# def process_images(folder_path, output_folder="runoff_output"):
+#     """
+#     Process rainfall images, compute runoff using soil moisture, and save results.
+#     """
+#     files = sorted(os.listdir(folder_path))  # Sort files for correct order
+#     os.makedirs(output_folder, exist_ok=True)
     
-    images = []
-    P_sum = None
-    P5_sum = None
-    previous_Runoff = None
-    log_flag = True
+#     images = []
+#     P_sum = None
+#     P5_sum = None
+#     previous_Runoff = None
+#     log_flag = True
 
-    global single_3H_runoff_time_start
-    global single_3H_runoff_time_end
-    global single_M1_calculation_time_start
-    global single_M1_calculation_time_end
-    global single_runoff_calculation_time_start
-    global single_runoff_calculation_time_end
+#     global single_3H_runoff_time_start
+#     global single_3H_runoff_time_end
+#     global single_M1_calculation_time_start
+#     global single_M1_calculation_time_end
+#     global single_runoff_calculation_time_start
+#     global single_runoff_calculation_time_end
 
-    destination_index = cp.asarray(load_tif_image('../tifs/lower_ganga_basin/itr_3H_jump.tif'))
+#     destination_index = cp.asarray(load_tif_image('../tifs/lower_ganga_basin/itr_3H_jump.tif'))
 
-    for index, file in enumerate(files):  # Process up to 112 images
-        if log_flag:
-            single_3H_runoff_time_start = time.time()
+#     for index, file in enumerate(files):  # Process up to 112 images
+#         if log_flag:
+#             single_3H_runoff_time_start = time.time()
 
-        # Load image and convert to CuPy array
-        img = cp.asarray(load_tif_image(os.path.join(folder_path, file)))
-        images.append(img)
+#         # Load image and convert to CuPy array
+#         img = cp.asarray(load_tif_image(os.path.join(folder_path, file)))
+#         images.append(img)
 
-        # Initialize summation for first 5 images
-        if index == 4:
-            P_sum = sum_tif_images(cp.array(images), 2, 5)  # Sum 3 images (2,3,4)
-            P5_sum = sum_tif_images(cp.array(images), 0, 5)  # Sum all 5 images
+#         # Initialize summation for first 5 images
+#         if index == 4:
+#             P_sum = sum_tif_images(cp.array(images), 2, 5)  # Sum 3 images (2,3,4)
+#             P5_sum = sum_tif_images(cp.array(images), 0, 5)  # Sum all 5 images
 
-        elif index >= 5:
-            # Maintain sliding window: Remove oldest, add newest
-            P_sum = P_sum - images[0] + images[-1]
-            P5_sum = P5_sum - images[0] + images[-1]
+#         elif index >= 5:
+#             # Maintain sliding window: Remove oldest, add newest
+#             P_sum = P_sum - images[0] + images[-1]
+#             P5_sum = P5_sum - images[0] + images[-1]
 
-            # Remove first image to keep memory in check
-            images.pop(0)
+#             # Remove first image to keep memory in check
+#             images.pop(0)
 
-        if index >= 4:
+#         if index >= 4:
 
-            # Compute runoff
-            if previous_Runoff is not None:
-                P_sum += previous_Runoff
-                P5_sum += previous_Runoff
+#             # Compute runoff
+#             if previous_Runoff is not None:
+#                 P_sum += previous_Runoff
+#                 P5_sum += previous_Runoff
 
-            # Compute soil moisture
-            if log_flag:
-                single_M1_calculation_time_start = time.time()
+#             # Compute soil moisture
+#             if log_flag:
+#                 single_M1_calculation_time_start = time.time()
 
-            m1_cp = compute_M(sr1, P5_sum)
-            m2_cp = compute_M(sr2, P5_sum)
-            m3_cp = compute_M(sr3, P5_sum)
+#             m1_cp = compute_M(sr1, P5_sum)
+#             m2_cp = compute_M(sr2, P5_sum)
+#             m3_cp = compute_M(sr3, P5_sum)
 
-            if log_flag:
-                single_M1_calculation_time_end = time.time()
-                log_to_file(f"Single M1 time: {single_M1_calculation_time_end - single_M1_calculation_time_start}")
+#             if log_flag:
+#                 single_M1_calculation_time_end = time.time()
+#                 log_to_file(f"Single M1 time: {single_M1_calculation_time_end - single_M1_calculation_time_start}")
 
-            if log_flag:
-                single_runoff_calculation_time_start = time.time()
-            R = calculate_runoff(P_sum, P5_sum, m1_cp, m2_cp, m3_cp, sr1, sr2, sr3)
-            if log_flag:
-                single_runoff_calculation_time_end = time.time()
-                log_to_file(f"Single Runoff (R) time: {single_runoff_calculation_time_end - single_runoff_calculation_time_start}")
-            # transfer the runoff (R) and store for next iteration
-            previous_Runoff = transfer_flow(destination_index, R) 
+#             if log_flag:
+#                 single_runoff_calculation_time_start = time.time()
+#             R = calculate_runoff(P_sum, P5_sum, m1_cp, m2_cp, m3_cp, sr1, sr2, sr3)
+#             if log_flag:
+#                 single_runoff_calculation_time_end = time.time()
+#                 log_to_file(f"Single Runoff (R) time: {single_runoff_calculation_time_end - single_runoff_calculation_time_start}")
+#             # transfer the runoff (R) and store for next iteration
+#             previous_Runoff = transfer_flow(destination_index, R) 
 
-            # Save runoff result
-            handler.save_tiff(cp.asnumpy(R), os.path.join(output_folder, f'runoff_simulation_3H_{index}.tif'))
+#             # Save runoff result
+#             handler.save_tiff(cp.asnumpy(R), os.path.join(output_folder, f'runoff_simulation_3H_{index}.tif'))
 
-            if log_flag:
-                single_3H_runoff_time_end = time.time()
-                log_to_file(f"Single 3 Hour runoff time: {single_3H_runoff_time_end - single_3H_runoff_time_start}")
-                log_flag = False  # Reset flag after first loop
+#             if log_flag:
+#                 single_3H_runoff_time_end = time.time()
+#                 log_to_file(f"Single 3 Hour runoff time: {single_3H_runoff_time_end - single_3H_runoff_time_start}")
+#                 log_flag = False  # Reset flag after first loop
 
-            # Free unused memory
-            # cp.get_default_memory_pool().free_all_blocks()
+#             # Free unused memory
+#             # cp.get_default_memory_pool().free_all_blocks()
 
-    print("Processing complete!")
+#     print("Processing complete!")
 
 
 def process_images_and_track_coordinates(folder_path, coordinate=(100, 100), output_folder="runoff_output"):
@@ -340,8 +328,8 @@ def plot_runoff_time_series(runoff_values, output_path="runoff_time_series.png")
 # Example usage
 if __name__ == "__main__":
     # folder_path = "rain_dataset_2023-07-01_2023-10-01" # lower ganga rain images path
-    folder_path = "../tifs/masalia/masalia_daily_rain" # masalia rain images path
-    output_folder_path = "../tifs/masalia/experiment_tifs/runoff_daily_simulation_2023_07-09" # masalia rain images path
+    folder_path = "../tifs/lower_ganga_basin/LOWER_GANGA_daily_rain" 
+    output_folder_path = "../tifs/masalia/experiment_tifs/runoff_daily_simulation_2023_07-09" 
     os.makedirs(output_folder_path, exist_ok=True)
     
     # Define coordinate to extract (x, y)

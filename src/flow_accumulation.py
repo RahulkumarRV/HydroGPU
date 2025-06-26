@@ -36,94 +36,94 @@ shift_offsets = {
     8: (0, 1)     # Right
 }
 
-def transfer_values_cupy_bincount(v, d):
-    """
-    Transfers values from matrix `v` to neighboring cells based on direction matrix `d` using CuPy and bincount.
+# def transfer_values_cupy_bincount(v, d):
+#     """
+#     Transfers values from matrix `v` to neighboring cells based on direction matrix `d` using CuPy and bincount.
 
-    v: CuPy array of shape (H, W) containing the values to transfer in this step.
-    d: CuPy array of shape (H, W) containing direction indices (1-8).
+#     v: CuPy array of shape (H, W) containing the values to transfer in this step.
+#     d: CuPy array of shape (H, W) containing direction indices (1-8).
 
-    Returns:
-        CuPy array of shape (H, W) representing the values transferred IN THIS STEP.
-    """
-    H, W = v.shape
-    # Use float32 for accumulating values
+#     Returns:
+#         CuPy array of shape (H, W) representing the values transferred IN THIS STEP.
+#     """
+#     H, W = v.shape
+#     # Use float32 for accumulating values
 
-    # *** GUARANTEE result is assigned at the start ***
-    result = cp.zeros((H, W), dtype=cp.float32)
+#     # *** GUARANTEE result is assigned at the start ***
+#     result = cp.zeros((H, W), dtype=cp.float32)
 
-    # Find cells that have a value > 0 to transfer
-    has_value_mask = (v > 0)
+#     # Find cells that have a value > 0 to transfer
+#     has_value_mask = (v > 0)
 
-    src_rows_all, src_cols_all = cp.nonzero(has_value_mask)
-    # Only proceed if there are any values > 0 to potentially transfer
-    if src_rows_all.size == 0:
-        return result # No values to transfer, return the initial zero result
+#     src_rows_all, src_cols_all = cp.nonzero(has_value_mask)
+#     # Only proceed if there are any values > 0 to potentially transfer
+#     if src_rows_all.size == 0:
+#         return result # No values to transfer, return the initial zero result
 
-    values_to_transfer_all = v[src_rows_all, src_cols_all]
-    directions_all = d[src_rows_all, src_cols_all]
+#     values_to_transfer_all = v[src_rows_all, src_cols_all]
+#     directions_all = d[src_rows_all, src_cols_all]
 
-    # Filter for valid directions (1-8) in the sources
-    valid_direction_mask = (directions_all >= 1) & (directions_all <= 8)
-    src_rows_valid = src_rows_all[valid_direction_mask]
-    src_cols_valid = src_cols_all[valid_direction_mask]
-    values_valid = values_to_transfer_all[valid_direction_mask]
-    directions_valid = directions_all[valid_direction_mask]
+#     # Filter for valid directions (1-8) in the sources
+#     valid_direction_mask = (directions_all >= 1) & (directions_all <= 8)
+#     src_rows_valid = src_rows_all[valid_direction_mask]
+#     src_cols_valid = src_cols_all[valid_direction_mask]
+#     values_valid = values_to_transfer_all[valid_direction_mask]
+#     directions_valid = directions_all[valid_direction_mask]
 
-    # Check if there are any valid transfers towards valid directions
-    if values_valid.size > 0:
-        all_flat_dest_indices = []
-        all_transfer_values = []
+#     # Check if there are any valid transfers towards valid directions
+#     if values_valid.size > 0:
+#         all_flat_dest_indices = []
+#         all_transfer_values = []
 
-        for direction, (di, dj) in shift_offsets.items():
-             direction_mask_this_dir = (directions_valid == direction)
-             if not cp.any(direction_mask_this_dir):
-                 continue
+#         for direction, (di, dj) in shift_offsets.items():
+#              direction_mask_this_dir = (directions_valid == direction)
+#              if not cp.any(direction_mask_this_dir):
+#                  continue
 
-             src_rows_this_dir = src_rows_valid[direction_mask_this_dir]
-             src_cols_this_dir = src_cols_valid[direction_mask_this_dir]
-             values_this_dir = values_valid[direction_mask_this_dir]
+#              src_rows_this_dir = src_rows_valid[direction_mask_this_dir]
+#              src_cols_this_dir = src_cols_valid[direction_mask_this_dir]
+#              values_this_dir = values_valid[direction_mask_this_dir]
 
-             dest_rows_this_dir = src_rows_this_dir + di
-             dest_cols_this_dir = src_cols_this_dir + dj
+#              dest_rows_this_dir = src_rows_this_dir + di
+#              dest_cols_this_dir = src_cols_this_dir + dj
 
-             # Check boundary conditions
-             valid_mask_this_dir = (dest_rows_this_dir >= 0) & (dest_rows_this_dir < H) & \
-                                    (dest_cols_this_dir >= 0) & (dest_cols_this_dir < W)
+#              # Check boundary conditions
+#              valid_mask_this_dir = (dest_rows_this_dir >= 0) & (dest_rows_this_dir < H) & \
+#                                     (dest_cols_this_dir >= 0) & (dest_cols_this_dir < W)
 
-             valid_dest_rows = dest_rows_this_dir[valid_mask_this_dir]
-             valid_dest_cols = dest_cols_this_dir[valid_mask_this_dir]
-             valid_values_this_dir = values_this_dir[valid_mask_this_dir] # Renamed to avoid conflict if needed
+#              valid_dest_rows = dest_rows_this_dir[valid_mask_this_dir]
+#              valid_dest_cols = dest_cols_this_dir[valid_mask_this_dir]
+#              valid_values_this_dir = values_this_dir[valid_mask_this_dir] # Renamed to avoid conflict if needed
 
-             if valid_values_this_dir.size > 0:
-                # Flatten valid destination indices
-                flat_valid_dest_indices = valid_dest_rows * W + valid_dest_cols
+#              if valid_values_this_dir.size > 0:
+#                 # Flatten valid destination indices
+#                 flat_valid_dest_indices = valid_dest_rows * W + valid_dest_cols
 
-                # Collect flattened indices and values from all directions
-                all_flat_dest_indices.append(flat_valid_dest_indices)
-                all_transfer_values.append(valid_values_this_dir) # Append renamed variable
+#                 # Collect flattened indices and values from all directions
+#                 all_flat_dest_indices.append(flat_valid_dest_indices)
+#                 all_transfer_values.append(valid_values_this_dir) # Append renamed variable
 
 
-        # *** Perform bincount only if any transfers were collected ***
-        if all_flat_dest_indices:
-             all_flat_dest_indices = cp.concatenate(all_flat_dest_indices)
-             all_transfer_values = cp.concatenate(all_transfer_values)
+#         # *** Perform bincount only if any transfers were collected ***
+#         if all_flat_dest_indices:
+#              all_flat_dest_indices = cp.concatenate(all_flat_dest_indices)
+#              all_transfer_values = cp.concatenate(all_transfer_values)
 
-             bincount_result_flat = cp.bincount(
-                 all_flat_dest_indices,
-                 weights=all_transfer_values,
-                 minlength=H * W
-             )
+#              bincount_result_flat = cp.bincount(
+#                  all_flat_dest_indices,
+#                  weights=all_transfer_values,
+#                  minlength=H * W
+#              )
 
-             # *** Reassign result with the calculated transfers ***
-             result = bincount_result_flat.reshape(H, W)
-        # Note: If all_flat_dest_indices is empty, result remains the zeros matrix initialized at the start.
+#              # *** Reassign result with the calculated transfers ***
+#              result = bincount_result_flat.reshape(H, W)
+#         # Note: If all_flat_dest_indices is empty, result remains the zeros matrix initialized at the start.
 
-    # If values_valid.size was initially 0, result also remains the zeros matrix.
-    # The initial check 'if src_rows_all.size == 0:' also handles the case
-    # where there are no values > 0 to begin with.
+#     # If values_valid.size was initially 0, result also remains the zeros matrix.
+#     # The initial check 'if src_rows_all.size == 0:' also handles the case
+#     # where there are no values > 0 to begin with.
 
-    return result # result is now guaranteed to be assigned
+#     return result # result is now guaranteed to be assigned
 
 
 def transfer_values_optimized(v, d):
@@ -184,15 +184,8 @@ def iterative_transfer_cupy(v, d):
     # Ensure v is float for summation
     v = v.astype(cp.float32)
     sum_v = cp.zeros_like(v, dtype=cp.float32)  # Initialize sum matrix
-
-    iteration = 0
     # Loop while there are still values > 0 in v to transfer
     while cp.any(v > 0):
-        iteration += 1
-        # Optional: print iteration progress
-        # Use cp.asnumpy(cp.sum(v)) to get the sum from GPU memory for printing
-        # print(f"Iteration {iteration}: Remaining values to transfer = {cp.asnumpy(cp.sum(v))}")
-
         # Compute the values transferred in this step
         new_v = transfer_values_optimized(v, d)
 
@@ -209,25 +202,29 @@ def iterative_transfer_cupy(v, d):
 
 # --- Main Execution ---
 
+## Inputes 
 FLOW_DIR_TIF = '../tifs/lower_ganga_basin/dem/lower_ganga_fd.tif'
 FLOW_ACC_TIF = '../tifs/lower_ganga_basin/dem/full_itr_floacc.tif'
 DEM = '../tifs/lower_ganga_basin/dem/lower_ganga_dem.tif'
 OUTPUT_STREAM_ORDER_TIF = '../tifs/lower_ganga_basin/flow_acc/lgb_facc.tif'
 
+# Initialize GeoTIFF handler, which will handle reading and writing GeoTIFF files
 handler = GeoTIFFHandler(FLOW_DIR_TIF)
 
-# # Load data as NumPy and convert to CuPy
-d = cp.asarray(load_tif_image(FLOW_DIR_TIF))
-v = cp.where(d != 0, cp.ones_like(d), cp.zeros_like(d))
+# Load data as NumPy and convert to CuPy
+dem = cp.asarray(load_tif_image(FLOW_DIR_TIF))
+v = cp.where(dem != 0, cp.ones_like(dem), cp.zeros_like(dem))
 
 # Compute iterative transfer
 start_time = time.time()
-transferred_v= iterative_transfer_cupy(v, d)
+transferred_v= iterative_transfer_cupy(v, dem)
 print(f"flow accumulation time : {time.time() - start_time}")
-# save_matrix_with_coordinates(transferred_v, 'dist.txt')
 
-transferred_v = cp.where(d != 0, transferred_v, 0)
-# Convert back to NumPy for saving
+# Ensure transferred_v is zero where dem is zero
+# This is to match the original TF code behavior where only valid DEM cells are considered.
+transferred_v = cp.where(dem != 0, transferred_v, 0)
+
+# Convert back to NumPy for saving to disk
 handler.save_tiff(cp.asnumpy(transferred_v).astype(np.float32),  OUTPUT_STREAM_ORDER_TIF)
 
 

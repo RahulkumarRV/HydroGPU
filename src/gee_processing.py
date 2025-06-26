@@ -9,8 +9,6 @@ import numpy as np
 from rasterio.merge import merge
 import re
 
-
-
 class MergeTiffs:
     def __init__(self, input_folder, output_folder):
         """Initialize the merger with input and output directories."""
@@ -124,7 +122,7 @@ class GEEDataDownloader:
         ee.Initialize(project=self.project_id)
     
     def sum_every_3_images(self, collection):
-        """Function to sum every 3 consecutive images."""
+        """Function to sum every 3 consecutive images to generate 3 hour rainfall dataset, because GEE provide hourly rainfall data."""
         size = collection.size()
         num_groups = size.divide(3).floor()
         
@@ -188,9 +186,6 @@ class GEEDataDownloader:
             
         except Exception as e:
             print(f"Error occurred: {e}") 
-
-
-                                                                                                      
 
 
 # Example usage

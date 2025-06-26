@@ -1,7 +1,5 @@
 import cupy as cp
 from flow_direction import load_tif_image
-from plot import create_plot
-import time
 from make_tif import GeoTIFFHandler
 import warnings
 
@@ -113,9 +111,6 @@ def compute_sr(CN: cp.ndarray) -> cp.ndarray:
     
     return sr
 
-
-
-
 def compute_M(sr, p):
     """
     Compute M2 using CuPy, ensuring that if either sr or p is NaN, the result is NaN.
@@ -164,22 +159,43 @@ def calculate_p_and_p5(file_paths):
     mid_sum = cp.sum(images[-2:], axis=0) if len(images) >= 2 else total_sum
     return total_sum, mid_sum
 
-def calculate_runoff(P, P5, M1, M2, M3, sr1, sr2, sr3):
-    """
-    Compute runoff using CuPy.
-    """
-    nan_mask = cp.isnan(P) | cp.isnan(P5) | cp.isnan(M1) | cp.isnan(M2) | cp.isnan(M3) | cp.isnan(sr1) | cp.isnan(sr2) | cp.isnan(sr3)
-    runoff = cp.zeros_like(sr1)
-    mask1 = (~nan_mask) & (P >= 0.2 * sr1) & (P5 >= 0) & (P5 <= 35)
-    mask2 = (~nan_mask) & (P >= 0.2 * sr2) & (P5 > 35) & (P5 <= 52.5)
-    mask3 = (~nan_mask) & (P >= 0.2 * sr3) & (P5 > 52.5)
+
+def generate_srs(SOIL, LULC, SLOPE):
+        
+    CN2 = compute_cn2(SOIL, LULC)
+    CN1 = compute_cn1(CN2)
+    CN3 = compute_cn3(CN2)
+
+    p1 = compute_part1(CN3, CN2)
+    p2 = compute_part2(SLOPE)
+
+    CN2a = compute_CN2a(p1, p2, CN2)
+    CN1a = compute_CN1a(CN2a)
+    CN3a = compute_CN3a(CN2a)
+
+    sr1 = compute_sr(CN1a)
+    sr2 = compute_sr(CN2a)
+    sr3 = compute_sr(CN3a)
+
+    return  sr1, sr2, sr3
+
+
+# def calculate_runoff(P, P5, M1, M2, M3, sr1, sr2, sr3):
+#     """
+#     Compute runoff using CuPy.
+#     """
+#     nan_mask = cp.isnan(P) | cp.isnan(P5) | cp.isnan(M1) | cp.isnan(M2) | cp.isnan(M3) | cp.isnan(sr1) | cp.isnan(sr2) | cp.isnan(sr3)
+#     runoff = cp.zeros_like(sr1)
+#     mask1 = (~nan_mask) & (P >= 0.2 * sr1) & (P5 >= 0) & (P5 <= 35)
+#     mask2 = (~nan_mask) & (P >= 0.2 * sr2) & (P5 > 35) & (P5 <= 52.5)
+#     mask3 = (~nan_mask) & (P >= 0.2 * sr3) & (P5 > 52.5)
     
-    runoff[mask1] = ((P[mask1] - 0.2 * sr1[mask1]) * (P[mask1] - 0.2 * sr1[mask1] + M1[mask1])) / (P[mask1] + 0.2 * sr1[mask1] + sr1[mask1] + M1[mask1])
-    runoff[mask2] = ((P[mask2] - 0.2 * sr2[mask2]) * (P[mask2] - 0.2 * sr2[mask2] + M2[mask2])) / (P[mask2] + 0.2 * sr2[mask2] + sr2[mask2] + M2[mask2])
-    runoff[mask3] = ((P[mask3] - 0.2 * sr3[mask3]) * (P[mask3] - 0.2 * sr3[mask3] + M3[mask3])) / (P[mask3] + 0.2 * sr3[mask3] + sr3[mask3] + M3[mask3])
+#     runoff[mask1] = ((P[mask1] - 0.2 * sr1[mask1]) * (P[mask1] - 0.2 * sr1[mask1] + M1[mask1])) / (P[mask1] + 0.2 * sr1[mask1] + sr1[mask1] + M1[mask1])
+#     runoff[mask2] = ((P[mask2] - 0.2 * sr2[mask2]) * (P[mask2] - 0.2 * sr2[mask2] + M2[mask2])) / (P[mask2] + 0.2 * sr2[mask2] + sr2[mask2] + M2[mask2])
+#     runoff[mask3] = ((P[mask3] - 0.2 * sr3[mask3]) * (P[mask3] - 0.2 * sr3[mask3] + M3[mask3])) / (P[mask3] + 0.2 * sr3[mask3] + sr3[mask3] + M3[mask3])
     
-    runoff[nan_mask] = cp.nan  # Restore NaNs
-    return runoff
+#     runoff[nan_mask] = cp.nan  # Restore NaNs
+#     return runoff
 
 
 def calculate_runoff_cupy(P, P5, m1, m2, m3, sr1, sr2, sr3):
@@ -288,70 +304,36 @@ def runoff_total_volume(runoff):
     return runoff
 
 
-# ------------------------------------ Lower Ganga Example --------------------------------------
-
-# handler = GeoTIFFHandler('../tifs/masalia/gee_outputs/sr1_masalia_ak.tif')
-# sr1 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr1_masalia_23-07-07_ak.tif'), dtype=cp.float32)
-# sr2 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr2_masalia_23-07-07_ak.tif'), dtype=cp.float32)
-# sr3 = cp.asarray(load_tif_image('../tifs/masalia/gee_outputs/sr3_masalia_23-07-07_ak.tif'), dtype=cp.float32)
-
-# def get_p_p5(index):
-    
-#     rain1 = cp.asarray(load_tif_image(f'../tifs/masalia/masalia_daily_rain/day_{index - 3}.tif'), dtype=cp.float32)
-#     rain2 = cp.asarray(load_tif_image(f'../tifs/masalia/masalia_daily_rain/day_{index - 2}.tif'), dtype=cp.float32)
-#     rain4 = cp.asarray(load_tif_image(f'../tifs/masalia/masalia_daily_rain/day_{index - 1}.tif'), dtype=cp.float32)
-#     rain3 = cp.asarray(load_tif_image(f'../tifs/masalia/masalia_daily_rain/day_{index}.tif'), dtype=cp.float32)
-
-#     P = rain4
-#     P5 = P + rain2  + rain1 + rain3
-#     return P, P5
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # -------------------------- Masalia Example ----------------------------------------------
 # Load static images
-handler = GeoTIFFHandler('../tifs/masalia/masalia_dem/dem.tif')
-soil = cp.asarray(load_tif_image('../tifs/masalia/soil_lulc/soil.tif'), dtype=cp.float32)
-lulc = cp.asarray(load_tif_image('../tifs/masalia/soil_lulc/lulc.tif'), dtype=cp.float32)
-slope = cp.asarray(load_tif_image('../tifs/masalia/masalia_dem/dem.tif'), dtype=cp.float32)
+# handler = GeoTIFFHandler('../tifs/masalia/masalia_dem/dem.tif')
+# soil = cp.asarray(load_tif_image('../tifs/masalia/soil_lulc/soil.tif'), dtype=cp.float32)
+# lulc = cp.asarray(load_tif_image('../tifs/masalia/soil_lulc/lulc.tif'), dtype=cp.float32)
+# slope = cp.asarray(load_tif_image('../tifs/masalia/masalia_dem/dem.tif'), dtype=cp.float32)
 
-CN2 = compute_cn2(soil, lulc)
-CN1 = compute_cn1(CN2)
-CN3 = compute_cn3(CN2)
+# CN2 = compute_cn2(soil, lulc)
+# CN1 = compute_cn1(CN2)
+# CN3 = compute_cn3(CN2)
 
 # handler.save_tiff(CN1.get(), '../tifs/masalia/local/cn1.tif')
 # handler.save_tiff(CN2.get(), '../tifs/masalia/local/cn2.tif')
 # handler.save_tiff(CN3.get(), '../tifs/masalia/local/cn3.tif')
 
-p1 = compute_part1(CN3, CN2)
-p2 = compute_part2(slope)
+# p1 = compute_part1(CN3, CN2)
+# p2 = compute_part2(slope)
 
-CN2a = compute_CN2a(p1, p2, CN2)
-CN1a = compute_CN1a(CN2a)
-CN3a = compute_CN3a(CN2a)
+# CN2a = compute_CN2a(p1, p2, CN2)
+# CN1a = compute_CN1a(CN2a)
+# CN3a = compute_CN3a(CN2a)
 
 # handler.save_tiff(CN1a.get(), '../tifs/masalia/local/CN1a.tif')
 # handler.save_tiff(CN2a.get(), '../tifs/masalia/local/CN2a.tif')
 # handler.save_tiff(CN3a.get(), '../tifs/masalia/local/CN3a.tif')
 
-sr1 = compute_sr(CN1a)
-sr2 = compute_sr(CN2a)
-sr3 = compute_sr(CN3a)
+# sr1 = compute_sr(CN1a)
+# sr2 = compute_sr(CN2a)
+# sr3 = compute_sr(CN3a)
 
 # handler.save_tiff(sr1.get(), '../tifs/masalia/local/sr1.tif')
 # handler.save_tiff(sr2.get(), '../tifs/masalia/local/sr2.tif')

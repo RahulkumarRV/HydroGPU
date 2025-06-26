@@ -1,6 +1,9 @@
-
 import cupy as cp
 import time
+import numpy as np
+from flow_direction import load_tif_image
+from make_tif import GeoTIFFHandler
+from plot import create_plot
 
 def compute_destination(F, V, cell_size, time_threshold):
     h, w = F.shape
@@ -178,70 +181,49 @@ def get_destination_indices_(flow_direction_matrix, velocity_matrix, cell_size=3
     return current_indices.reshape(rows, cols)
 
 
-
+# resolution in meters
 cell_size = 30.0
+# time threshold in seconds
 threshold = 10800.0
 
-# velocity = compute_velocity_from_elevation(elevation_data, d, 30)
+# Inputes
+# make sure the direction incoding is from 1 to 8 and zero is nodata
+FLOW_DIR_TIF = '../tifs/masalia/masalia_dem/dem_dir.tif'
+DEM = '../tifs/masalia/masalia_dem/dem.tif'
 
-# print(get_destination_indices(d, velocity_matrix=velocity, cell_size=30, time_threshold=300))
-
-import numpy as np
-from flow_direction import load_tif_image
-from make_tif import GeoTIFFHandler
-from plot import create_plot
 
 start_time = time.time()
 
-handler = GeoTIFFHandler('../tifs/masalia/masalia_dem/dem_dir.tif')
-d = load_tif_image('../tifs/masalia/masalia_dem/dem_dir_remaped.tif')
-elevation_data = cp.asarray(load_tif_image('../tifs/masalia/masalia_dem/dem.tif'))
-# velocity = load_tif_image('./tifs/local/velocity_masalia_3h.tif')
-# create_plot(velocity, './outputs/local/velocity_masalia_temp')
-d = cp.asarray(d, dtype=cp.int32)
-# velocity = cp.asarray(velocity)
-print(cp.unique(elevation_data))
-create_plot(elevation_data.get(), '../tifs/masalia/experiment_pngs/dem.png')
-velocity = compute_velocity_from_elevation(elevation_data, d, 30)
-create_plot(velocity.get(), '../tifs/masalia/experiment_pngs/velocity.png')
-handler.save_tiff(velocity.get(), '../tifs/masalia/experiment_tifs/velocity.tif')
+handler = GeoTIFFHandler(FLOW_DIR_TIF)
 
+elevation_data = cp.asarray(load_tif_image(DEM))
+direction = cp.asarray(load_tif_image(FLOW_DIR_TIF), dtype=cp.int32)
+
+# create_plot(elevation_data.get(), '../tifs/masalia/experiment_pngs/dem.png')
+
+# compute velocity from elevation data
+# Note: The velocity is computed based on the flow direction and elevation data using modified Manning's equation.
+velocity = compute_velocity_from_elevation(elevation_data, direction, 30)
+
+# velocity output raster can be save for further use
+# handler.save_tiff(velocity.get(), '../tifs/masalia/experiment_tifs/velocity.tif')
+
+# create initial row major indices
 rows, cols = velocity.shape
 total_cells = rows * cols
 indices = cp.arange(total_cells).reshape((rows, cols))
 indices = cp.where( elevation_data > 0, indices, 0)
-create_plot(indices.get(), '../tifs/masalia/experiment_pngs/index_masalia.png')
 
-destination_idx = get_destination_indices_(d, velocity_matrix=velocity, cell_size=30, time_threshold=threshold)
+# create_plot(indices.get(), '../tifs/masalia/experiment_pngs/index_masalia.png')
+
+# compute the jump matrix 
+destination_idx = get_destination_indices_(direction, velocity_matrix=velocity, cell_size=30, time_threshold=threshold)
 end_time = time.time()
 print(f'iterative flow transfer time : {end_time - start_time}')  
 
+# final raster take the jump matrix for only the valid cells in the input of elevation raster
 destination_idx = cp.where( elevation_data > 0, destination_idx, 0)
-# print(destination_idx)
+
+
 create_plot(destination_idx.get(), '../tifs/masalia/experiment_pngs/3h_destination_index_masalia.png')
 handler.save_tiff(cp.asnumpy(destination_idx).astype(np.int32), '../tifs/masalia/experiment_tifs/3h_destination_index_masalia.tif')
-
-
-
-
-
-
-
-
-# Example usage
-# v = cp.array([[1,1,1,1,1], [1,1,1,1,1], [1,1,1,1,1], [1,1,1,1,1], [1,1,1,1,1]], dtype=cp.float32)
-# d = cp.array([
-#     [7, 7, 7, 6, 6],
-#     [7, 7, 7, 6, 6],
-#     [8, 8, 7, 6, 5],
-#     [1, 1, 8, 7, 6],
-#     [1, 8, 8, 8, 0]
-# ], dtype=cp.int64)  # 0 means no transfer
-
-# elevation_data = cp.array([
-#     [78, 72, 69, 71, 58],
-#     [74, 67, 56, 49, 46],
-#     [69, 53, 44, 37, 38],
-#     [64, 58, 55, 22, 31],
-#     [68, 61, 47, 21, 16]
-# ], dtype=cp.float64)

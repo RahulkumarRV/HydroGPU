@@ -1,4 +1,3 @@
-import time
 import os
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
@@ -9,7 +8,6 @@ def authenticate_drive():
     gauth = GoogleAuth()
     gauth.LocalWebserverAuth()
     return GoogleDrive(gauth)
-
 
 
 def download_from_drive(drive, folder_name, local_download_path):
@@ -53,13 +51,16 @@ def download_from_drive(drive, folder_name, local_download_path):
 
     print("All files downloaded successfully.")
 
+# Example usage of the download_from_drive function
 
-
+# Authenticate and create a Google Drive instance
 drive = authenticate_drive()
 
+# Specify the folder name in Google Drive containing GEE data
 drive_folder = "Lower_Ganga_3H_Rain_2023-07-01_2023-10-01"
 
 # Local directory to save the downloaded images
 local_directory = "./downloaded_GEE_rain"
 
+# Call the function to download files from Google Drive
 download_from_drive(drive, drive_folder, local_directory)
